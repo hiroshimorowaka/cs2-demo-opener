@@ -62,12 +62,19 @@ Watch rounds with live kill feeds, floor selectors, dynamic scores, and player i
 
 CS2 controls demo voice playback via two 32-bit bitmask console variables: `tv_listen_voice_indices` and `tv_listen_voice_indices_h` (representing the 64 available player slots). Setting a slot's bit to `1` unmutes that player, and `0` mutes them.
 
-### 1. Registry Scanning, Steam Profile Detection & Name Resolution
-At startup, the Rust backend scans the Windows Registry to locate the active Steam installation:
+### 1. Steam Profile Detection & Name Resolution
+At startup, the Rust backend locates the active Steam installation. On **Windows** it scans the registry:
 ```rust
 HKEY_CURRENT_USER\Software\Valve\Steam
 ```
-It reads `SteamPath` and parses `config/loginusers.vdf` to retrieve local Steam IDs and usernames. 
+On **Linux**, it checks the standard Steam install locations instead (native, Flatpak, and Snap):
+```
+~/.local/share/Steam
+~/.steam/steam
+~/.var/app/com.valvesoftware.Steam/.local/share/Steam
+~/snap/steam/common/.local/share/Steam
+```
+Either way, it then reads `SteamPath` (or the resolved directory) and parses `config/loginusers.vdf` to retrieve local Steam IDs and usernames. 
 
 To bypass in-game name changes, the application asynchronously resolves original Steam usernames. For each detected player, the backend queries the Steam Community XML interface (`https://steamcommunity.com/profiles/<steam_id>/?xml=1`) and streams the resolved names back to the frontend.
 
@@ -92,7 +99,7 @@ Once a voice mode and target player lock option are selected, the application:
    * `spec_player <slot>` using the player's 1-based spectator slot index ($s + 1$).
    * `bind "F1" "spec_player <slot>"` so you can instantly refocus the camera onto your target player in-game if spectator focus switches.
    * `playdemo demos/<name>.dem` to start demo playback.
-3. Spawns Steam (`steam.exe -applaunch 730 +exec voice_demo.cfg`) to launch CS2 (falling back to spawning `cs2.exe` directly if Steam cannot be found) or alerts you to run `exec voice_demo` in the game console if CS2 is already running.
+3. Spawns Steam (`steam.exe -applaunch 730 +exec voice_demo.cfg` on Windows, `steam -applaunch 730 +exec voice_demo.cfg` on Linux, where CS2 runs through Proton) or alerts you to run `exec voice_demo` in the game console if CS2 is already running. On Windows, it falls back to spawning `cs2.exe` directly if Steam cannot be found.
 
 ### 5. High-Performance 2D Replay Chunking (Protobuf & Caching)
 To achieve instant seeks and high-performance playback within the 2D viewer:
@@ -102,7 +109,7 @@ To achieve instant seeks and high-performance playback within the 2D viewer:
 
 ### 6. Architecture Overview
 The application is structured into two main layers:
-*   **Rust Backend (Tauri):** Handles OS registry scans, asynchronous Steam ID parsing, transparent Zstd decompression of compressed `.zst` matches, multi-threaded demo parsing, and game launch execution.
+*   **Rust Backend (Tauri):** Handles Steam installation discovery (Windows registry or Linux filesystem conventions), asynchronous Steam ID parsing, transparent Zstd decompression of compressed `.zst` matches, multi-threaded demo parsing, and game launch execution.
 *   **Preact Frontend (Vite):** A lightweight single-page application built with Preact. It coordinates asynchronously with the Rust backend via Tauri IPC to display interactive lineups, settings overlays, and voice card states. All icons are rendered directly as raw vector SVGs to keep the application 100% offline-compatible with zero runtime asset overhead.
 
 ---
@@ -113,7 +120,13 @@ The application is structured into two main layers:
 *   [Bun](https://bun.sh/)
 *   [Rust](https://www.rust-lang.org/)
 *   [Tauri CLI](https://tauri.app/v1/guides/developer-tooling/cli/)
-*   Windows OS (for Registry scanning and CS2 path resolution)
+*   Windows or Linux. CS2 itself (via Steam/Proton) is required to actually launch demos.
+
+On Linux, install Tauri's native build dependencies first (Debian/Ubuntu example):
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf build-essential curl wget file
+```
+See the [Tauri Linux prerequisites guide](https://v2.tauri.app/start/prerequisites/#linux) for other distributions.
 
 ### Install Dependencies
 ```bash
@@ -129,6 +142,7 @@ bun tauri dev
 ```bash
 bun tauri build
 ```
+On Linux this produces a `.deb`, `.rpm`, and an `AppImage` under `src-tauri/target/release/bundle/`.
 
 ---
 

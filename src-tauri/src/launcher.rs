@@ -3,7 +3,7 @@ use crate::models::PlayerInfo;
 use crate::parser::prepare_demo_path;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn copy_file_with_retry(source: &Path, target: &Path) -> std::io::Result<u64> {
@@ -168,6 +168,11 @@ tv_listen_voice_indices_h {}
     Ok(())
 }
 
+#[cfg(windows)]
+const STEAM_BINARY_NAME: &str = "steam.exe";
+#[cfg(unix)]
+const STEAM_BINARY_NAME: &str = "steam";
+
 fn execute_cs2_launch(cs2_game_dir: &Path) -> Result<(), AppError> {
     let cs2_exe = cs2_game_dir.join("bin").join("win64").join("cs2.exe");
     if !cs2_exe.exists() {
@@ -177,9 +182,19 @@ fn execute_cs2_launch(cs2_game_dir: &Path) -> Result<(), AppError> {
     let steam_path = crate::steam::get_steam_path().ok();
 
     let launched_via_steam = if let Some(path_buf) = steam_path {
-        let steam_exe = path_buf.join("steam.exe");
-        if steam_exe.exists() {
-            Command::new(steam_exe)
+        let steam_exe = path_buf.join(STEAM_BINARY_NAME);
+        let steam_launcher = if steam_exe.exists() {
+            Some(steam_exe)
+        } else if cfg!(unix) {
+            // On Linux the Steam binary is usually resolved via PATH rather
+            // than living inside the Steam data directory.
+            which_in_path(STEAM_BINARY_NAME).map(PathBuf::from)
+        } else {
+            None
+        };
+
+        if let Some(launcher) = steam_launcher {
+            Command::new(launcher)
                 .arg("-applaunch")
                 .arg("730")
                 .arg("+exec")
@@ -194,14 +209,55 @@ fn execute_cs2_launch(cs2_game_dir: &Path) -> Result<(), AppError> {
     };
 
     if !launched_via_steam {
-        Command::new(cs2_exe)
-            .arg("+exec")
-            .arg("voice_demo.cfg")
-            .spawn()
-            .map_err(|e| AppError::Launch(format!("Failed to start CS2 directly: {}", e)))?;
+        // CS2 ships Windows binaries only; without Steam/Proton to run them,
+        // a direct launch is only viable on Windows itself.
+        #[cfg(windows)]
+        {
+            Command::new(cs2_exe)
+                .arg("+exec")
+                .arg("voice_demo.cfg")
+                .spawn()
+                .map_err(|e| AppError::Launch(format!("Failed to start CS2 directly: {}", e)))?;
+        }
+        #[cfg(unix)]
+        {
+            return Err(AppError::Launch(
+                "Could not find the Steam executable to launch CS2 through Proton".to_string(),
+            ));
+        }
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn which_in_path(bin: &str) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(bin))
+        .find(|candidate| candidate.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+fn is_cs2_running() -> bool {
+    use std::os::windows::process::CommandExt;
+    Command::new("tasklist.exe")
+        .creation_flags(0x08000000)
+        .args(&["/FI", "IMAGENAME eq cs2.exe"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("cs2.exe"))
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn is_cs2_running() -> bool {
+    // CS2 on Linux runs under Proton, as "cs2.exe" within the wine/proton process tree.
+    Command::new("pgrep")
+        .args(["-f", "cs2.exe"])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
 }
 
 pub fn launch_cs2_demo_internal(
@@ -274,15 +330,7 @@ pub fn launch_cs2_demo_internal(
         target_player_info,
     )?;
 
-    use std::os::windows::process::CommandExt;
-    let cs2_running = Command::new("tasklist.exe")
-        .creation_flags(0x08000000)
-        .args(&["/FI", "IMAGENAME eq cs2.exe"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("cs2.exe"))
-        .unwrap_or(false);
-
-    if cs2_running {
+    if is_cs2_running() {
         return Ok("already_running".to_string());
     }
 

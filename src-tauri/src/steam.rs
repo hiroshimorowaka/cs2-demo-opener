@@ -3,24 +3,46 @@ use crate::models::SteamUser;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use winreg::enums::*;
-use winreg::RegKey;
 
 const STEAM_ID64_INDIVIDUAL_PREFIX: &str = "7656119";
+
+#[cfg(windows)]
+fn find_steam_path() -> Result<String, String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let steam_key = hkcu
+        .open_subkey(r"Software\Valve\Steam")
+        .map_err(|e| format!("Steam registry key not found: {}", e))?;
+    let path: String = steam_key
+        .get_value("SteamPath")
+        .map_err(|e| format!("SteamPath value not found in registry: {}", e))?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn find_steam_path() -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let candidates = [
+        format!("{home}/.local/share/Steam"),
+        format!("{home}/.steam/steam"),
+        format!("{home}/.steam/root"),
+        format!("{home}/.var/app/com.valvesoftware.Steam/.local/share/Steam"),
+        format!("{home}/.var/app/com.valvesoftware.Steam/data/Steam"),
+        format!("{home}/snap/steam/common/.local/share/Steam"),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|p| Path::new(p).join("steamapps").is_dir())
+        .ok_or_else(|| "Steam installation not found in any known location".to_string())
+}
 
 pub fn get_steam_path() -> Result<PathBuf, AppError> {
     static STEAM_PATH_CACHE: std::sync::OnceLock<Result<String, String>> =
         std::sync::OnceLock::new();
-    let res = STEAM_PATH_CACHE.get_or_init(|| {
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let steam_key = hkcu
-            .open_subkey(r"Software\Valve\Steam")
-            .map_err(|e| format!("Steam registry key not found: {}", e))?;
-        let path: String = steam_key
-            .get_value("SteamPath")
-            .map_err(|e| format!("SteamPath value not found in registry: {}", e))?;
-        Ok(path)
-    });
+    let res = STEAM_PATH_CACHE.get_or_init(find_steam_path);
 
     match res {
         Ok(s) => Ok(PathBuf::from(s)),
